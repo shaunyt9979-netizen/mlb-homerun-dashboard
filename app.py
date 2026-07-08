@@ -242,7 +242,7 @@ def build_board(game: dict, view_team: str, season: int):
         rows.append(
             {
                 "id": pid,
-                "name": info["person"]["fullName"] if info else "Unknown",
+                "name": (info.get("person", {}) or {}).get("fullName") or f"Player #{pid}" if info else "Unknown",
                 "pos": info.get("position", {}).get("abbreviation", "") if info else "",
                 "barrel": barrel,
                 "hard_hit": hard_hit,
@@ -317,7 +317,7 @@ def render_top_reads(df, batting_abbr, pitching_abbr):
                 <div style="background:white;border:1px solid #E4E7EC;border-radius:12px;padding:16px;">
                   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;">
                     <div>
-                      <div style="font-weight:600;">{p['name']}</div>
+                      <div style="font-weight:600;color:#1B2A41;">{p['name']}</div>
                       <div style="font-size:11px;color:#6B7789;font-family:monospace;">{batting_abbr} vs {pitching_abbr}</div>
                     </div>
                     <div style="font-family:'Sora',sans-serif;font-weight:800;font-size:24px;color:#E8622C;">{p['true_hr_score']:.1f}</div>
@@ -340,7 +340,7 @@ def mini_stat(label, value):
     return f"""
     <div style="background:#F6F7FA;border-radius:8px;padding:6px 2px;">
       <div style="font-size:9px;text-transform:uppercase;color:#9AA5B1;margin-bottom:2px;">{label}</div>
-      <div style="font-family:monospace;font-weight:600;font-size:13px;">{value}</div>
+      <div style="font-family:monospace;font-weight:600;font-size:13px;color:#1B2A41;">{value}</div>
     </div>
     """
 
@@ -365,7 +365,7 @@ def render_lineup_table(df):
         rows_html += f"""
         <tr>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;">
-            <div style="font-weight:500;">{r['name']}</div>
+            <div style="font-weight:500;color:#1B2A41;">{r['name']}</div>
             <div style="font-size:11px;color:#9AA5B1;font-family:monospace;">{r['pos']}</div>
           </td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;">
@@ -374,16 +374,16 @@ def render_lineup_table(df):
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;">
             <span style="padding:2px 8px;border-radius:5px;font-family:monospace;{heat_style(r['matchup_score']/100)}">{r['matchup_score']:.1f}</span>
           </td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{r['zone_fit']:.3f}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{r['hr_form_pct']}% <span style="color:{trend_color(r['hr_trend'])}">{trend_arrow(r['hr_trend'])}</span></td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{r['iso']:.3f}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['xwoba']) else f"{r['xwoba']:.3f}"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['xwobacon']) else f"{r['xwobacon']:.3f}"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['pull']) else f"{r['pull']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['barrel']) else f"{r['barrel']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['sweet_spot']) else f"{r['sweet_spot']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['hard_hit']) else f"{r['hard_hit']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['la']) else f"{r['la']:.1f}"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['zone_fit']:.3f}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['hr_form_pct']}% <span style="color:{trend_color(r['hr_trend'])}">{trend_arrow(r['hr_trend'])}</span></td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['iso']:.3f}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['xwoba']) else f"{r['xwoba']:.3f}"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['xwobacon']) else f"{r['xwobacon']:.3f}"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['pull']) else f"{r['pull']:.1f}%"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['barrel']) else f"{r['barrel']:.1f}%"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['sweet_spot']) else f"{r['sweet_spot']:.1f}%"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['hard_hit']) else f"{r['hard_hit']:.1f}%"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['la']) else f"{r['la']:.1f}"}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#6B7789;">{vs_p}</td>
         </tr>
         """
@@ -417,6 +417,9 @@ st.markdown(
     <style>
       .block-container { padding-top: 1.5rem; max-width: 1400px; }
       #MainMenu, footer, header { visibility: hidden; }
+      .block-container div, .block-container td, .block-container th, .block-container span {
+        color-scheme: light;
+      }
     </style>
     """,
     unsafe_allow_html=True,
