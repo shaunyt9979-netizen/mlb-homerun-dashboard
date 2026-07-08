@@ -219,9 +219,12 @@ def build_board(game: dict, view_team: str, season: int):
         pull = sv("pull_percent")
         la = sv("launch_angle_avg")
         iso = sv("iso")
-        if iso is None:
+        if iso is None or pd.isna(iso):
             slg, avg = stat.get("slg"), stat.get("avg")
-            iso = (float(slg) - float(avg)) if slg and avg else 0.0
+            try:
+                iso = (float(slg) - float(avg)) if slg and avg else 0.0
+            except (TypeError, ValueError):
+                iso = 0.0
 
         season_hr = float(stat.get("homeRuns", 0))
         season_games = float(stat.get("gamesPlayed", 1)) or 1.0
@@ -328,7 +331,7 @@ def render_top_reads(df, batting_abbr, pitching_abbr):
                     {mini_stat("HR Form", f"{p['hr_form_pct']}% <span style='color:{trend_color(p['hr_trend'])}'>{trend_arrow(p['hr_trend'])}</span>")}
                     {mini_stat("Pulled Brl", f"{p['pull']:.1f}%" if pd.notna(p['pull']) else "—")}
                     {mini_stat("Brl/BIP", f"{p['barrel']:.1f}%" if pd.notna(p['barrel']) else "—")}
-                    {mini_stat("ISO", f"{p['iso']:.3f}")}
+                    {mini_stat("ISO", f"{p['iso']:.3f}" if pd.notna(p['iso']) else "—")}
                   </div>
                 </div>
                 """,
@@ -337,12 +340,12 @@ def render_top_reads(df, batting_abbr, pitching_abbr):
 
 
 def mini_stat(label, value):
-    return f"""
-    <div style="background:#F6F7FA;border-radius:8px;padding:6px 2px;">
-      <div style="font-size:9px;text-transform:uppercase;color:#9AA5B1;margin-bottom:2px;">{label}</div>
-      <div style="font-family:monospace;font-weight:600;font-size:13px;color:#1B2A41;">{value}</div>
-    </div>
-    """
+    return (
+        f'<div style="background:#F6F7FA;border-radius:8px;padding:6px 2px;">'
+        f'<div style="font-size:9px;text-transform:uppercase;color:#9AA5B1;margin-bottom:2px;">{label}</div>'
+        f'<div style="font-family:monospace;font-weight:600;font-size:13px;color:#1B2A41;">{value}</div>'
+        f'</div>'
+    )
 
 
 def render_lineup_table(df):
@@ -376,7 +379,7 @@ def render_lineup_table(df):
           </td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['zone_fit']:.3f}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['hr_form_pct']}% <span style="color:{trend_color(r['hr_trend'])}">{trend_arrow(r['hr_trend'])}</span></td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['iso']:.3f}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['iso']) else f"{r['iso']:.3f}"}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['xwoba']) else f"{r['xwoba']:.3f}"}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['xwobacon']) else f"{r['xwobacon']:.3f}"}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['pull']) else f"{r['pull']:.1f}%"}</td>
