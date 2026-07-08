@@ -72,22 +72,33 @@ def get_schedule(date_str: str):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_roster(team_id: int):
-    r = requests.get(f"{API_BASE}/teams/{team_id}/roster", params={"rosterType": "active"}, timeout=10)
+def get_roster_with_stats(team_id: int, season: int):
+    """Active roster hydrated with each player's season hitting stats in one call.
+
+    (The old approach called /teams/{id}/stats expecting per-player rows, but that
+    endpoint actually returns team-level totals — so it silently produced an empty
+    season_stats dict and the board always showed 'no hitter data'.)
+    """
+    r = requests.get(
+        f"{API_BASE}/teams/{team_id}/roster",
+        params={
+            "rosterType": "active",
+            "hydrate": f"person(stats(group=hitting,type=season,season={season}))",
+        },
+        timeout=10,
+    )
     r.raise_for_status()
     return r.json().get("roster", [])
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_team_season_hitting(team_id: int, season: int):
-    r = requests.get(
-        f"{API_BASE}/teams/{team_id}/stats",
-        params={"stats": "season", "group": "hitting", "season": season},
-        timeout=10,
-    )
-    r.raise_for_status()
-    splits = r.json().get("stats", [{}])[0].get("splits", [])
-    return {s["player"]["id"]: s["stat"] for s in splits if "player" in s}
+def extract_season_stat(player_entry: dict):
+    """Pull the season hitting stat dict out of a hydrated roster entry, or None."""
+    for grp in player_entry.get("person", {}).get("stats", []):
+        if grp.get("group", {}).get("displayName") == "hitting":
+            splits = grp.get("splits", [])
+            if splits:
+                return splits[0].get("stat")
+    return None
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -164,10 +175,15 @@ def build_board(game: dict, view_team: str, season: int):
     park_abbr = game["home"]["abbreviation"]
     park_factor = PARK_HR_FACTOR.get(park_abbr, 1.0)
 
-    roster = get_roster(batting_team["id"])
+    roster = get_roster_with_stats(batting_team["id"], season)
     hitter_ids = [p["person"]["id"] for p in roster if p.get("position", {}).get("abbreviation") != "P"]
 
-    season_stats = get_team_season_hitting(batting_team["id"], season)
+    season_stats = {}
+    for p in roster:
+        stat = extract_season_stat(p)
+        if stat:
+            season_stats[p["person"]["id"]] = stat
+
     ranked = sorted(
         [pid for pid in hitter_ids if pid in season_stats],
         key=lambda pid: season_stats[pid].get("plateAppearances", 0),
