@@ -29,6 +29,12 @@ SAVANT_URL = (
     "sweet_spot_percent,pull_percent,iso,launch_angle_avg"
     "&chart=false&csv=true"
 )
+SAVANT_PITCHER_URL = (
+    "https://baseballsavant.mlb.com/leaderboard/custom"
+    "?year={year}&type=pitcher&min=1"
+    "&selections=csw_percent,whiff_percent,o_swing_percent,k_percent,bb_percent,f_strike_percent"
+    "&chart=false&csv=true"
+)
 
 # Rough static historical HR park-factor approximations (1.00 = neutral).
 # Not live/weather-adjusted — just a reasonable seed value per home park.
@@ -134,6 +140,38 @@ def get_savant_leaderboard(season: int):
     """Returns a DataFrame keyed by MLBAM player_id, or None if unreachable."""
     try:
         r = requests.get(SAVANT_URL.format(year=season), timeout=15)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text))
+        id_col = next((c for c in ("player_id", "mlbam_id", "id") if c in df.columns), None)
+        if id_col is None:
+            return None
+        df = df.set_index(id_col)
+        return df
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_pitcher_season_stats(pitcher_id: int, season: int):
+    """Season pitching line (ERA, WHIP, HR/9, K/9, BB/9, IP, etc.) for one pitcher."""
+    try:
+        r = requests.get(
+            f"{API_BASE}/people/{pitcher_id}/stats",
+            params={"stats": "season", "group": "pitching", "season": season},
+            timeout=10,
+        )
+        r.raise_for_status()
+        splits = r.json().get("stats", [{}])[0].get("splits", [])
+        return splits[0]["stat"] if splits else {}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_savant_pitcher_leaderboard(season: int):
+    """Returns a DataFrame of pitcher Statcast plate-discipline metrics, or None if unreachable."""
+    try:
+        r = requests.get(SAVANT_PITCHER_URL.format(year=season), timeout=15)
         r.raise_for_status()
         df = pd.read_csv(io.StringIO(r.text))
         id_col = next((c for c in ("player_id", "mlbam_id", "id") if c in df.columns), None)
@@ -413,6 +451,68 @@ def render_lineup_table(df):
     )
 
 
+def _sv_get(row, candidates):
+    """Pull the first matching column from a Savant leaderboard row (names shift slightly year to year)."""
+    if row is None:
+        return None
+    for c in candidates:
+        if c in row and pd.notna(row[c]):
+            try:
+                return float(row[c])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def render_pitcher_report(pitcher: dict, season: int, team_abbr: str, opp_abbr: str):
+    stat = get_pitcher_season_stats(pitcher["id"], season)
+    sv_df = get_savant_pitcher_leaderboard(season)
+    sv_row = sv_df.loc[pitcher["id"]] if sv_df is not None and pitcher["id"] in sv_df.index else None
+
+    era = stat.get("era", "—")
+    whip = stat.get("whip", "—")
+    hr9 = stat.get("homeRunsPer9", "—")
+    k9 = stat.get("strikeoutsPer9Inn", "—")
+    bb9 = stat.get("walksPer9Inn", "—")
+    ip = stat.get("inningsPitched", "—")
+
+    csw = _sv_get(sv_row, ["csw_percent"])
+    whiff = _sv_get(sv_row, ["whiff_percent"])
+    chase = _sv_get(sv_row, ["o_swing_percent", "chase_percent"])
+    k_pct = _sv_get(sv_row, ["k_percent"])
+    bb_pct = _sv_get(sv_row, ["bb_percent"])
+    kbb = f"{k_pct - bb_pct:.1f}%" if k_pct is not None and bb_pct is not None else "—"
+    fstrike = _sv_get(sv_row, ["f_strike_percent"])
+
+    def pct(v):
+        return f"{v:.1f}%" if v is not None else "—"
+
+    st.markdown(
+        f"""
+        <div style="background:white;border:1px solid #E4E7EC;border-radius:12px;padding:16px;margin-bottom:16px;">
+          <div style="font-weight:700;font-size:16px;color:#1B2A41;">🎯 Pitcher Report — {pitcher['fullName']}</div>
+          <div style="font-size:11px;color:#6B7789;font-family:monospace;margin-bottom:10px;">{opp_abbr} vs {team_abbr}</div>
+          <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;text-align:center;">
+            {mini_stat("ERA", era)}
+            {mini_stat("WHIP", whip)}
+            {mini_stat("HR/9", hr9)}
+            {mini_stat("K/9", k9)}
+            {mini_stat("BB/9", bb9)}
+            {mini_stat("IP", ip)}
+            {mini_stat("CSW%", pct(csw))}
+            {mini_stat("Whiff%", pct(whiff))}
+            {mini_stat("Chase%", pct(chase))}
+            {mini_stat("K-BB%", kbb)}
+            {mini_stat("1st-Pitch K%", pct(fstrike))}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if sv_row is None:
+        st.caption("Savant plate-discipline data (CSW%, Whiff%, Chase%, K-BB%, 1st-Pitch K%) wasn't available for this pitcher — showing MLB Stats API season line only.")
+
+
 # ----------------------------- App layout ------------------------------ #
 
 st.markdown(
@@ -487,6 +587,9 @@ st.markdown(
 
 with st.spinner("Loading lineup data…"):
     df, park_factor, savant_ok = build_board(game, view_team, season)
+
+if opposing_pitcher:
+    render_pitcher_report(opposing_pitcher, season, batting_team["abbreviation"], pitching_team["abbreviation"])
 
 if not savant_ok:
     st.warning(
