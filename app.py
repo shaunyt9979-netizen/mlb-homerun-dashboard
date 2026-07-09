@@ -32,7 +32,8 @@ SAVANT_URL = (
 SAVANT_PITCHER_URL = (
     "https://baseballsavant.mlb.com/leaderboard/custom"
     "?year={year}&type=pitcher&min=1"
-    "&selections=csw_percent,whiff_percent,o_swing_percent,k_percent,bb_percent,f_strike_percent"
+    "&selections=whiff_percent,o_swing_percent,oz_swing_percent,k_percent,bb_percent,"
+    "f_strike_percent,called_strike_percent,pitches,called_strikes,whiffs"
     "&chart=false&csv=true"
 )
 
@@ -477,8 +478,19 @@ def render_pitcher_report(pitcher: dict, season: int, team_abbr: str, opp_abbr: 
     ip = stat.get("inningsPitched", "—")
 
     csw = _sv_get(sv_row, ["csw_percent"])
+    if csw is None:
+        called_strike_pct = _sv_get(sv_row, ["called_strike_percent"])
+        whiff_pct_raw = _sv_get(sv_row, ["whiff_percent"])
+        if called_strike_pct is not None and whiff_pct_raw is not None:
+            csw = called_strike_pct + whiff_pct_raw
+        else:
+            pitches = _sv_get(sv_row, ["pitches"])
+            called_strikes = _sv_get(sv_row, ["called_strikes"])
+            whiffs = _sv_get(sv_row, ["whiffs", "swing_miss"])
+            if pitches and called_strikes is not None and whiffs is not None:
+                csw = (called_strikes + whiffs) / pitches * 100
     whiff = _sv_get(sv_row, ["whiff_percent"])
-    chase = _sv_get(sv_row, ["o_swing_percent", "chase_percent"])
+    chase = _sv_get(sv_row, ["oz_swing_percent", "o_swing_percent", "chase_percent"])
     k_pct = _sv_get(sv_row, ["k_percent"])
     bb_pct = _sv_get(sv_row, ["bb_percent"])
     kbb = f"{k_pct - bb_pct:.1f}%" if k_pct is not None and bb_pct is not None else "—"
