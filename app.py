@@ -546,6 +546,52 @@ with top_r:
     with c2:
         pass
 
+with st.expander("📖 Stat Glossary — what am I looking at?"):
+    gloss_tab1, gloss_tab2 = st.tabs(["Hitter Stats", "Pitcher Stats"])
+
+    with gloss_tab1:
+        st.markdown("""
+**Most predictive — weight these heavily**
+- **Barrel% (Brl/BIP%)** — rate of batted balls hit with the ideal exit velo + launch angle combo. The single best predictor of HR power. 10%+ is strong.
+- **HardHit%** — share of batted balls hit at 95+ mph exit velocity. Feeds barrels, but hard contact alone can also leave the yard.
+- **ISO** — Isolated Power (SLG − AVG). Measures raw power production over a season, less noisy than any single-game stat.
+
+**Strong context modifiers**
+- **Pull%** — most home runs are pulled. A high pull rate paired with a short porch on that side of the park is a real signal.
+- **Park factor** — multiplier for how much a park inflates or suppresses HRs. 1.10+ meaningfully boosts odds; below 0.90 suppresses them.
+- **HR Form (trend arrow)** — recent hot/cold streak. Useful as a tiebreaker between similarly-scored hitters, not a primary driver.
+
+**Use with caution**
+- **vs Pitcher** — usually a tiny sample (2-3 AB) and mostly noise. Don't weight heavily unless it's double-digit AB.
+- **xwOBA / xwOBAcon** — expected weighted on-base average. Great for overall offensive quality, but less HR-specific than Barrel%/ISO since it includes all contact.
+- **Launch Angle (LA)** — only meaningful alongside exit velocity. HR sweet spot is roughly 25–35°; LA alone doesn't tell you much. (On the heat-mapped lineup board, "hotter" here just means higher relative to tonight's lineup, not necessarily "better.")
+
+**Composite scores (built into this dashboard)**
+- **TrueHRScore** — blends Barrel%, ISO, HardHit%, xwOBA, and HR Form into one number. Your starting shortlist for the night.
+- **MatchupScore** — adjusts TrueHRScore for the specific pitcher matchup and park factor — a better gauge of tonight's odds specifically.
+- **ZoneFit** — how well a hitter's power zones line up with where this pitcher tends to throw.
+        """)
+
+    with gloss_tab2:
+        st.markdown("""
+**Season line (MLB Stats API)**
+- **ERA** — Earned Run Average, runs allowed per 9 innings. Lower is better. Broad effectiveness read, not HR-specific.
+- **WHIP** — Walks + Hits per Inning Pitched. Lower is better; high WHIP often means more traffic and more pitches under pressure.
+- **HR/9** — home runs allowed per 9 innings. The most direct season-long HR-risk stat on the card.
+- **K/9** — strikeouts per 9 innings. Higher means more swing-and-miss stuff, which tends to suppress hard contact.
+- **BB/9** — walks per 9 innings. Higher walk rates can cut both ways for HR risk depending on approach.
+- **IP** — innings pitched this season. Use as a sample-size check — stats built on 15 IP are far less reliable than 100+ IP.
+
+**Plate discipline (Baseball Savant, Statcast)**
+- **Whiff%** — share of swings that miss entirely. Higher signals swing-and-miss stuff that suppresses hard contact — good for the pitcher.
+- **Chase%** — rate hitters swing at pitches outside the zone against this pitcher. Higher chase rate favors the pitcher.
+- **K-BB%** — strikeout rate minus walk rate. A clean single-number gauge of overall command — higher is better.
+- **1st-Pitch K%** — rate of first pitches thrown for strikes. Getting ahead early gives a pitcher more options and generally suppresses damage.
+- **CSW%** — Called Strikes + Whiffs as a share of total pitches. A well-regarded "stuff" metric — may show "—" if Savant hasn't populated it for that pitcher yet.
+
+**How to read it for HR props:** Start with HR/9 for the direct season-long signal, then check Whiff% and K-BB% to see if the underlying stuff supports that number or if it's been lucky/unlucky. A low HR/9 backed by strong Whiff%/K-BB% is a real signal; a low HR/9 with weak Whiff%/K-BB% may be due for regression.
+        """)
+
 date_str = sel_date.strftime("%Y-%m-%d")
 season = sel_date.year
 
