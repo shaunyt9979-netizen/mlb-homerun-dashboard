@@ -197,15 +197,15 @@ def normalize(val, lo, hi):
 def heat_style(pct):
     if pct is None or pd.isna(pct):
         return "background-color:#F3F4F6;color:#9AA5B1;"
-    if pct >= 0.75:
-        return "background-color:#8FCB8F;color:#1B2A41;"
-    if pct >= 0.55:
-        return "background-color:#C7DE95;color:#1B2A41;"
-    if pct >= 0.40:
-        return "background-color:#F2E08C;color:#1B2A41;"
-    if pct >= 0.22:
-        return "background-color:#F3C179;color:#1B2A41;"
-    return "background-color:#EFA491;color:#1B2A41;"
+    pct = min(1.0, max(0.0, pct))
+    red, yellow, green = (233, 150, 122), (245, 224, 130), (140, 198, 140)
+    if pct < 0.5:
+        t = pct / 0.5
+        c = tuple(int(red[i] + (yellow[i] - red[i]) * t) for i in range(3))
+    else:
+        t = (pct - 0.5) / 0.5
+        c = tuple(int(yellow[i] + (green[i] - yellow[i]) * t) for i in range(3))
+    return f"background-color:#{c[0]:02x}{c[1]:02x}{c[2]:02x};color:#1B2A41;"
 
 
 def build_board(game: dict, view_team: str, season: int):
@@ -399,34 +399,30 @@ def render_lineup_table(df):
         raw = val[1]
         pct = normalize(raw, lo, hi) if pd.notna(raw) else None
         text = "—" if pd.isna(raw) else fmt_text
-        return f"<span style='padding:2px 8px;border-radius:5px;{heat_style(pct)}'>{text}</span>"
+        return f"<td style='padding:6px 10px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;{heat_style(pct)}'>{text}</td>"
 
     rows_html = ""
     for _, r in df.iterrows():
         vs_p = f"{int(r['vs_pitcher_hr'] or 0)}HR/{int(r['vs_pitcher_ab'])}AB" if pd.notna(r["vs_pitcher_ab"]) else "—"
         rows_html += f"""
         <tr>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;">
-            <div style="font-weight:500;color:#1B2A41;">{r['name']}</div>
-            <div style="font-size:11px;color:#9AA5B1;font-family:monospace;">{r['pos']}</div>
+          <td style="padding:6px 10px;border-top:1px solid #EEF0F3;">
+            <div style="font-weight:500;color:#1B2A41;font-size:13px;">{r['name']}</div>
+            <div style="font-size:10px;color:#9AA5B1;font-family:monospace;">{r['pos']}</div>
           </td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;">
-            <span style="padding:2px 8px;border-radius:5px;font-family:monospace;font-weight:600;{heat_style(r['true_hr_score']/100)}">{r['true_hr_score']:.1f}</span>
-          </td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;">
-            <span style="padding:2px 8px;border-radius:5px;font-family:monospace;{heat_style(r['matchup_score']/100)}">{r['matchup_score']:.1f}</span>
-          </td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('zone_fit', r['zone_fit']), f"{r['zone_fit']:.3f}")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['hr_form_pct']}% <span style="color:{trend_color(r['hr_trend'])}">{trend_arrow(r['hr_trend'])}</span></td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('iso', r['iso']), f"{r['iso']:.3f}")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('xwoba', r['xwoba']), f"{r['xwoba']:.3f}")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('xwobacon', r['xwobacon']), f"{r['xwobacon']:.3f}")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('pull', r['pull']), f"{r['pull']:.1f}%")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('barrel', r['barrel']), f"{r['barrel']:.1f}%")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('sweet_spot', r['sweet_spot']), f"{r['sweet_spot']:.1f}%")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('hard_hit', r['hard_hit']), f"{r['hard_hit']:.1f}%")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('la', r['la']), f"{r['la']:.1f}")}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#6B7789;">{vs_p}</td>
+          <td style="padding:6px 10px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;font-weight:600;{heat_style(r['true_hr_score']/100)}">{r['true_hr_score']:.1f}</td>
+          <td style="padding:6px 10px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;{heat_style(r['matchup_score']/100)}">{r['matchup_score']:.1f}</td>
+          {badge(('zone_fit', r['zone_fit']), f"{r['zone_fit']:.3f}")}
+          <td style="padding:6px 10px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['hr_form_pct']}% <span style="color:{trend_color(r['hr_trend'])}">{trend_arrow(r['hr_trend'])}</span></td>
+          {badge(('iso', r['iso']), f"{r['iso']:.3f}")}
+          {badge(('xwoba', r['xwoba']), f"{r['xwoba']:.3f}")}
+          {badge(('xwobacon', r['xwobacon']), f"{r['xwobacon']:.3f}")}
+          {badge(('pull', r['pull']), f"{r['pull']:.1f}%")}
+          {badge(('barrel', r['barrel']), f"{r['barrel']:.1f}%")}
+          {badge(('sweet_spot', r['sweet_spot']), f"{r['sweet_spot']:.1f}%")}
+          {badge(('hard_hit', r['hard_hit']), f"{r['hard_hit']:.1f}%")}
+          {badge(('la', r['la']), f"{r['la']:.1f}")}
+          <td style="padding:6px 10px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#6B7789;">{vs_p}</td>
         </tr>
         """
 
