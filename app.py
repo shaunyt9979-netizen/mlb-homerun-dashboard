@@ -388,18 +388,18 @@ def mini_stat(label, value):
 
 
 def render_lineup_table(df):
-    def cell(col, fmt, heat=False, heat_col=None, suffix=""):
-        out = []
-        for _, r in df.iterrows():
-            val = r[col]
-            text = "—" if pd.isna(val) else fmt(val)
-            if heat:
-                pct = r[heat_col] / 100 if pd.notna(r[heat_col]) else None
-                style = heat_style(pct)
-                out.append(f"<span style='padding:2px 8px;border-radius:5px;{style}'>{text}</span>")
-            else:
-                out.append(text)
-        return out
+    # Columns to heat-map, relative to tonight's lineup (min-max normalized).
+    # LA is included for visual consistency but "hotter" here just means
+    # "higher relative to this lineup" — it isn't a goodness signal like the others.
+    heat_cols = ["zone_fit", "iso", "xwoba", "xwobacon", "pull", "barrel", "sweet_spot", "hard_hit", "la"]
+    ranges = {c: (df[c].min(skipna=True), df[c].max(skipna=True)) for c in heat_cols}
+
+    def badge(val, fmt_text):
+        lo, hi = ranges[val[0]]
+        raw = val[1]
+        pct = normalize(raw, lo, hi) if pd.notna(raw) else None
+        text = "—" if pd.isna(raw) else fmt_text
+        return f"<span style='padding:2px 8px;border-radius:5px;{heat_style(pct)}'>{text}</span>"
 
     rows_html = ""
     for _, r in df.iterrows():
@@ -416,16 +416,16 @@ def render_lineup_table(df):
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;">
             <span style="padding:2px 8px;border-radius:5px;font-family:monospace;{heat_style(r['matchup_score']/100)}">{r['matchup_score']:.1f}</span>
           </td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['zone_fit']:.3f}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('zone_fit', r['zone_fit']), f"{r['zone_fit']:.3f}")}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{r['hr_form_pct']}% <span style="color:{trend_color(r['hr_trend'])}">{trend_arrow(r['hr_trend'])}</span></td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['iso']) else f"{r['iso']:.3f}"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['xwoba']) else f"{r['xwoba']:.3f}"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['xwobacon']) else f"{r['xwobacon']:.3f}"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['pull']) else f"{r['pull']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['barrel']) else f"{r['barrel']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['sweet_spot']) else f"{r['sweet_spot']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['hard_hit']) else f"{r['hard_hit']:.1f}%"}</td>
-          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#1B2A41;">{'—' if pd.isna(r['la']) else f"{r['la']:.1f}"}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('iso', r['iso']), f"{r['iso']:.3f}")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('xwoba', r['xwoba']), f"{r['xwoba']:.3f}")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('xwobacon', r['xwobacon']), f"{r['xwobacon']:.3f}")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('pull', r['pull']), f"{r['pull']:.1f}%")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('barrel', r['barrel']), f"{r['barrel']:.1f}%")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('sweet_spot', r['sweet_spot']), f"{r['sweet_spot']:.1f}%")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('hard_hit', r['hard_hit']), f"{r['hard_hit']:.1f}%")}</td>
+          <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{badge(('la', r['la']), f"{r['la']:.1f}")}</td>
           <td style="padding:10px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;color:#6B7789;">{vs_p}</td>
         </tr>
         """
