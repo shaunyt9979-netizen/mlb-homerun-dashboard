@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
 
 API_BASE = "https://statsapi.mlb.com/api/v1"
 SAVANT_URL = (
@@ -49,6 +51,96 @@ PARK_HR_FACTOR = {
 }
 
 st.set_page_config(page_title="MLB HR Dashboard", layout="wide", page_icon="⚾")
+
+# --------------------------- Google Sheets logging ----------------------- #
+# Source of truth for prediction tracking. Sheet ID + credentials are stored
+# in Streamlit secrets, never committed to the repo. See README for setup.
+
+PREDICTIONS_SHEET_NAME = "Predictions"
+
+PREDICTION_COLUMNS = [
+    "prediction_id", "date", "game_id", "player_id", "player", "team",
+    "opponent", "pitcher", "ballpark",
+    "true_hr_score", "matchup_score", "confidence_score",
+    "barrel_pct", "hardhit_pct", "iso", "xwoba", "pulled_barrel_pct", "park_factor",
+    "fd_odds", "dk_odds", "best_odds", "closing_odds",
+    "model_probability", "implied_probability", "edge",
+    "hr_result", "units_won_lost", "reason_bet",
+]
+
+
+@st.cache_resource(show_spinner=False)
+def get_sheets_client():
+    """Authenticate with Google Sheets using service-account creds from st.secrets.
+    Returns None (rather than raising) if secrets aren't configured yet, so the
+    rest of the app keeps working even before Sheets is wired up."""
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+
+@st.cache_resource(show_spinner=False)
+def get_predictions_sheet():
+    client = get_sheets_client()
+    if client is None:
+        return None
+    try:
+        sheet_id = st.secrets["sheet_id"]
+        sh = client.open_by_key(sheet_id)
+        try:
+            ws = sh.worksheet(PREDICTIONS_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=PREDICTIONS_SHEET_NAME, rows=2000, cols=len(PREDICTION_COLUMNS))
+        # Ensure header row exists / matches schema
+        existing_header = ws.row_values(1)
+        if existing_header != PREDICTION_COLUMNS:
+            ws.update("A1", [PREDICTION_COLUMNS])
+        return ws
+    except Exception:
+        return None
+
+
+def log_board_to_sheets(df: pd.DataFrame, game: dict, date_str: str, batting_team_abbr: str,
+                         opp_abbr: str, pitcher_name: str, ballpark: str, park_factor: float):
+    """Append every hitter on today's board as a row (not just ones you bet).
+    Odds/result/edge fields are left blank for later manual entry."""
+    ws = get_predictions_sheet()
+    if ws is None:
+        return False, "Sheets not connected yet — check Streamlit secrets."
+
+    rows = []
+    for _, r in df.iterrows():
+        pred_id = f"{date_str}_{game['key']}_{r['id']}"
+        row = {
+            "prediction_id": pred_id, "date": date_str, "game_id": game["key"],
+            "player_id": r["id"], "player": r["name"], "team": batting_team_abbr,
+            "opponent": opp_abbr, "pitcher": pitcher_name, "ballpark": ballpark,
+            "true_hr_score": r["true_hr_score"], "matchup_score": r["matchup_score"],
+            "confidence_score": "",
+            "barrel_pct": r.get("barrel", ""), "hardhit_pct": r.get("hard_hit", ""),
+            "iso": r.get("iso", ""), "xwoba": r.get("xwoba", ""),
+            "pulled_barrel_pct": r.get("pull", ""), "park_factor": park_factor,
+            "fd_odds": "", "dk_odds": "", "best_odds": "", "closing_odds": "",
+            "model_probability": "", "implied_probability": "", "edge": "",
+            "hr_result": "", "units_won_lost": "", "reason_bet": "",
+        }
+        rows.append([row[c] for c in PREDICTION_COLUMNS])
+
+    try:
+        existing_ids = set(ws.col_values(1))
+        new_rows = [r for r in rows if r[0] not in existing_ids]
+        if new_rows:
+            ws.append_rows(new_rows, value_input_option="USER_ENTERED")
+        return True, f"Logged {len(new_rows)} new rows ({len(rows) - len(new_rows)} already existed)."
+    except Exception as e:
+        return False, f"Save failed: {e}"
 
 
 # ----------------------------- Data fetchers ------------------------------ #
@@ -663,6 +755,24 @@ st.markdown(
     f"{opposing_pitcher['fullName'] if opposing_pitcher else 'TBD'}"
 )
 render_lineup_table(df)
+
+st.markdown("---")
+save_col1, save_col2 = st.columns([1, 3])
+with save_col1:
+    save_clicked = st.button("💾 Save Today's Board", use_container_width=True)
+with save_col2:
+    if save_clicked:
+        with st.spinner("Saving to Google Sheets…"):
+            ok, msg = log_board_to_sheets(
+                df, game, date_str, batting_team["abbreviation"],
+                pitching_team["abbreviation"],
+                opposing_pitcher["fullName"] if opposing_pitcher else "TBD",
+                game.get("venue", ""), park_factor,
+            )
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
 
 st.caption(
     "TrueHRScore, MatchupScore, ZoneFit, and HR Form are composite estimates built from public "
