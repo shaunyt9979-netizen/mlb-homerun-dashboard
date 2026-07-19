@@ -2,5 +2,5 @@ streamlit>=1.38
 pandas>=2.2.3
 numpy>=2.1
 requests>=2.32
-gspread>=6.1
-google-auth>=2.34
+rsa>=4.9
+pyasn1>=0.6
