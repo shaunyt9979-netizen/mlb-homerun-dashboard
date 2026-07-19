@@ -13,15 +13,22 @@ from public inputs, normalized within each night's lineup. They approximate — 
 not replicate — any specific commercial model. Not betting advice.
 """
 
+import base64
 import io
+import json
+import time
 from datetime import date as date_cls, datetime
 
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import gspread
-from google.oauth2.service_account import Credentials
+try:
+    import rsa
+    from pyasn1.codec.der import decoder as der_decoder
+    SHEETS_AVAILABLE = True
+except ImportError:
+    SHEETS_AVAILABLE = False
 
 API_BASE = "https://statsapi.mlb.com/api/v1"
 SAVANT_URL = (
@@ -55,8 +62,18 @@ st.set_page_config(page_title="MLB HR Dashboard", layout="wide", page_icon="⚾"
 # --------------------------- Google Sheets logging ----------------------- #
 # Source of truth for prediction tracking. Sheet ID + credentials are stored
 # in Streamlit secrets, never committed to the repo. See README for setup.
+#
+# Talks to the Sheets API directly over HTTP (via `requests`) instead of the
+# gspread/google-auth libraries — those pull in the compiled `cryptography`
+# package, which was segfaulting on this deployment's Python build. `rsa` and
+# `pyasn1` used here are pure Python, no compiled C extensions, to sidestep
+# that whole class of crash.
 
 PREDICTIONS_SHEET_NAME = "Predictions"
+SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 PREDICTION_COLUMNS = [
     "prediction_id", "date", "game_id", "player_id", "player", "team",
@@ -69,76 +86,129 @@ PREDICTION_COLUMNS = [
 ]
 
 
-@st.cache_resource(show_spinner=False)
-def get_sheets_client():
-    """Authenticate with Google Sheets using service-account creds from st.secrets.
-    Returns None (rather than raising) if secrets aren't configured yet, so the
-    rest of the app keeps working even before Sheets is wired up."""
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _pkcs8_pem_to_rsa_private_key(pem_str: str):
+    """Google's service-account JSON gives an RSA key in PKCS#8 PEM format.
+    The pure-Python `rsa` library only reads PKCS#1, so unwrap the PKCS#8
+    envelope with pyasn1 first to get at the inner PKCS#1 DER bytes."""
+    lines = pem_str.strip().splitlines()
+    der_b64 = "".join(l for l in lines if not l.startswith("-----"))
+    der_bytes = base64.b64decode(der_b64)
+    asn1_struct, _ = der_decoder.decode(der_bytes)
+    pkcs1_der = bytes(asn1_struct[2])
+    return rsa.PrivateKey.load_pkcs1(pkcs1_der, format="DER")
+
+
+def _build_signed_jwt(sa_info: dict) -> str:
+    now = int(time.time())
+    header = {"alg": "RS256", "typ": "JWT"}
+    claims = {
+        "iss": sa_info["client_email"],
+        "scope": " ".join(SHEETS_SCOPES),
+        "aud": "https://oauth2.googleapis.com/token",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    signing_input = f"{_b64url(json.dumps(header).encode())}.{_b64url(json.dumps(claims).encode())}"
+    priv_key = _pkcs8_pem_to_rsa_private_key(sa_info["private_key"])
+    signature = rsa.sign(signing_input.encode(), priv_key, "SHA-256")
+    return f"{signing_input}.{_b64url(signature)}"
+
+
+@st.cache_resource(ttl=3000, show_spinner=False)
+def get_sheets_access_token():
+    """Returns a bearer token for Sheets/Drive API calls, or None if unavailable.
+    Cached just under the 1-hour token lifetime so it auto-refreshes."""
+    if not SHEETS_AVAILABLE:
+        return None
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
+        sa_info = dict(st.secrets["gcp_service_account"])
+        assertion = _build_signed_jwt(sa_info)
+        resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
     except Exception:
         return None
 
 
-@st.cache_resource(show_spinner=False)
-def get_predictions_sheet():
-    client = get_sheets_client()
-    if client is None:
-        return None
-    try:
-        sheet_id = st.secrets["sheet_id"]
-        sh = client.open_by_key(sheet_id)
-        try:
-            ws = sh.worksheet(PREDICTIONS_SHEET_NAME)
-        except gspread.WorksheetNotFound:
-            ws = sh.add_worksheet(title=PREDICTIONS_SHEET_NAME, rows=2000, cols=len(PREDICTION_COLUMNS))
-        # Ensure header row exists / matches schema
-        existing_header = ws.row_values(1)
-        if existing_header != PREDICTION_COLUMNS:
-            ws.update("A1", [PREDICTION_COLUMNS])
-        return ws
-    except Exception:
-        return None
+def _sheets_api(method: str, path: str, token: str, **kwargs):
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{path}"
+    resp = requests.request(method, url, headers={"Authorization": f"Bearer {token}"}, timeout=15, **kwargs)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def ensure_predictions_sheet_ready(sheet_id: str, token: str):
+    """Confirms the Predictions tab exists with the right header row, creating/fixing it if needed."""
+    meta = _sheets_api("GET", sheet_id, token)
+    titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
+    if PREDICTIONS_SHEET_NAME not in titles:
+        _sheets_api(
+            "POST", f"{sheet_id}:batchUpdate", token,
+            json={"requests": [{"addSheet": {"properties": {"title": PREDICTIONS_SHEET_NAME}}}]},
+        )
+    header_resp = _sheets_api(
+        "GET", f"{sheet_id}/values/{PREDICTIONS_SHEET_NAME}!1:1", token,
+    )
+    existing_header = header_resp.get("values", [[]])[0] if header_resp.get("values") else []
+    if existing_header != PREDICTION_COLUMNS:
+        _sheets_api(
+            "PUT", f"{sheet_id}/values/{PREDICTIONS_SHEET_NAME}!A1", token,
+            params={"valueInputOption": "USER_ENTERED"},
+            json={"values": [PREDICTION_COLUMNS]},
+        )
 
 
 def log_board_to_sheets(df: pd.DataFrame, game: dict, date_str: str, batting_team_abbr: str,
                          opp_abbr: str, pitcher_name: str, ballpark: str, park_factor: float):
     """Append every hitter on today's board as a row (not just ones you bet).
     Odds/result/edge fields are left blank for later manual entry."""
-    ws = get_predictions_sheet()
-    if ws is None:
+    token = get_sheets_access_token()
+    if token is None:
         return False, "Sheets not connected yet — check Streamlit secrets."
 
-    rows = []
-    for _, r in df.iterrows():
-        pred_id = f"{date_str}_{game['key']}_{r['id']}"
-        row = {
-            "prediction_id": pred_id, "date": date_str, "game_id": game["key"],
-            "player_id": r["id"], "player": r["name"], "team": batting_team_abbr,
-            "opponent": opp_abbr, "pitcher": pitcher_name, "ballpark": ballpark,
-            "true_hr_score": r["true_hr_score"], "matchup_score": r["matchup_score"],
-            "confidence_score": "",
-            "barrel_pct": r.get("barrel", ""), "hardhit_pct": r.get("hard_hit", ""),
-            "iso": r.get("iso", ""), "xwoba": r.get("xwoba", ""),
-            "pulled_barrel_pct": r.get("pull", ""), "park_factor": park_factor,
-            "fd_odds": "", "dk_odds": "", "best_odds": "", "closing_odds": "",
-            "model_probability": "", "implied_probability": "", "edge": "",
-            "hr_result": "", "units_won_lost": "", "reason_bet": "",
-        }
-        rows.append([row[c] for c in PREDICTION_COLUMNS])
-
     try:
-        existing_ids = set(ws.col_values(1))
-        new_rows = [r for r in rows if r[0] not in existing_ids]
-        if new_rows:
-            ws.append_rows(new_rows, value_input_option="USER_ENTERED")
-        return True, f"Logged {len(new_rows)} new rows ({len(rows) - len(new_rows)} already existed)."
+        sheet_id = st.secrets["sheet_id"]
+        ensure_predictions_sheet_ready(sheet_id, token)
+
+        existing_resp = _sheets_api("GET", f"{sheet_id}/values/{PREDICTIONS_SHEET_NAME}!A:A", token)
+        existing_ids = {row[0] for row in existing_resp.get("values", []) if row}
+
+        rows = []
+        for _, r in df.iterrows():
+            pred_id = f"{date_str}_{game['key']}_{r['id']}"
+            if pred_id in existing_ids:
+                continue
+            row = {
+                "prediction_id": pred_id, "date": date_str, "game_id": game["key"],
+                "player_id": r["id"], "player": r["name"], "team": batting_team_abbr,
+                "opponent": opp_abbr, "pitcher": pitcher_name, "ballpark": ballpark,
+                "true_hr_score": r["true_hr_score"], "matchup_score": r["matchup_score"],
+                "confidence_score": "",
+                "barrel_pct": r.get("barrel", ""), "hardhit_pct": r.get("hard_hit", ""),
+                "iso": r.get("iso", ""), "xwoba": r.get("xwoba", ""),
+                "pulled_barrel_pct": r.get("pull", ""), "park_factor": park_factor,
+                "fd_odds": "", "dk_odds": "", "best_odds": "", "closing_odds": "",
+                "model_probability": "", "implied_probability": "", "edge": "",
+                "hr_result": "", "units_won_lost": "", "reason_bet": "",
+            }
+            rows.append([str(row[c]) for c in PREDICTION_COLUMNS])
+
+        if rows:
+            _sheets_api(
+                "POST", f"{sheet_id}/values/{PREDICTIONS_SHEET_NAME}!A:A:append", token,
+                params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+                json={"values": rows},
+            )
+        skipped = len(df) - len(rows)
+        return True, f"Logged {len(rows)} new rows ({skipped} already existed)."
     except Exception as e:
         return False, f"Save failed: {e}"
 
