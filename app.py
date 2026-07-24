@@ -683,6 +683,179 @@ def render_pitcher_report(pitcher: dict, season: int, team_abbr: str, opp_abbr: 
         st.caption("Savant plate-discipline data (CSW%, Whiff%, Chase%, K-BB%, 1st-Pitch K%) wasn't available for this pitcher — showing MLB Stats API season line only.")
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def get_team_season_hitting_summary(team_id: int, season: int):
+    """Team-level aggregate hitting line (ISO, AVG, OBP, SLG, HR) for the season.
+    Used as a lightweight 'lineup quality' proxy for the Pitcher Attack Board —
+    much cheaper than hydrating every hitter's individual stats for every team."""
+    try:
+        r = requests.get(
+            f"{API_BASE}/teams/{team_id}/stats",
+            params={"stats": "season", "group": "hitting", "season": season},
+            timeout=10,
+        )
+        r.raise_for_status()
+        splits = r.json().get("stats", [{}])[0].get("splits", [])
+        if not splits:
+            return {}
+        stat = splits[0]["stat"]
+        try:
+            iso = float(stat.get("slg", 0)) - float(stat.get("avg", 0))
+        except (TypeError, ValueError):
+            iso = None
+        return {"iso": iso, "avg": stat.get("avg"), "obp": stat.get("obp"),
+                "slg": stat.get("slg"), "home_runs": stat.get("homeRuns")}
+    except Exception:
+        return {}
+
+
+def build_attack_board(games: list, season: int):
+    """One row per probable starting pitcher on the slate, scored on how
+    'attackable' they are — blending their own risk (ERA, HR/9, plate discipline)
+    against the specific lineup they're facing tonight and the park."""
+    rows = []
+    for g in games:
+        for side, pitcher_key, opp_side in (("home", "home_pitcher", "away"), ("away", "away_pitcher", "home")):
+            pitcher = g.get(pitcher_key)
+            if not pitcher:
+                continue
+            opp_team = g[opp_side]
+            pitching_team = g[side]
+            stat = get_pitcher_season_stats(pitcher["id"], season)
+            if not stat or not stat.get("inningsPitched"):
+                continue
+            sv_df = get_savant_pitcher_leaderboard(season)
+            sv_row = sv_df.loc[pitcher["id"]] if sv_df is not None and pitcher["id"] in sv_df.index else None
+            whiff = _sv_get(sv_row, ["whiff_percent"])
+            k_pct = _sv_get(sv_row, ["k_percent"])
+            bb_pct = _sv_get(sv_row, ["bb_percent"])
+            kbb = (k_pct - bb_pct) if k_pct is not None and bb_pct is not None else None
+
+            opp_hit = get_team_season_hitting_summary(opp_team["id"], season)
+            park_factor = PARK_HR_FACTOR.get(g["home"]["abbreviation"], 1.0)
+
+            try:
+                era = float(stat.get("era", 0))
+                hr9 = float(stat.get("homeRunsPer9", 0))
+                whip = float(stat.get("whip", 0))
+            except (TypeError, ValueError):
+                era = hr9 = whip = None
+
+            rows.append({
+                "game_key": g["key"], "pitcher": pitcher["fullName"], "pitcher_id": pitcher["id"],
+                "pitching_team": pitching_team["abbreviation"], "opp_team": opp_team["abbreviation"],
+                "era": era, "hr9": hr9, "whip": whip,
+                "whiff_pct": whiff, "kbb_pct": kbb,
+                "opp_iso": opp_hit.get("iso"), "park_factor": park_factor,
+                "ip": stat.get("inningsPitched"),
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    board = pd.DataFrame(rows)
+
+    def norm(col, invert=False):
+        lo, hi = board[col].min(skipna=True), board[col].max(skipna=True)
+        vals = board[col].apply(lambda v: normalize(v, lo, hi) if pd.notna(v) else 0.5)
+        return (1 - vals) if invert else vals
+
+    # Higher = more attackable for the bettor (pitcher more likely to give up damage):
+    # opponent power (opp_iso), pitcher's own hr9/era/whip go UP, pitcher's whiff/kbb go DOWN, park UP.
+    board["lineup_pressure"] = (norm("opp_iso") * 100).round(1)
+    board["attack_score"] = (
+        norm("opp_iso") * 0.30 +
+        norm("hr9") * 0.20 +
+        norm("era") * 0.15 +
+        (1 - norm("whiff_pct")) * 0.15 +
+        (1 - norm("kbb_pct")) * 0.10 +
+        norm("park_factor") * 0.10
+    ).mul(100).round(1)
+
+    def tier(score):
+        if score >= 75:
+            return "🔥 Smash Spot"
+        if score >= 60:
+            return "✅ Attackable"
+        if score >= 45:
+            return "➖ Neutral Lean"
+        return "🛡️ Tough Matchup"
+
+    board["tier"] = board["attack_score"].apply(tier)
+    return board.sort_values("attack_score", ascending=False).reset_index(drop=True)
+
+
+def render_attack_board(board: pd.DataFrame):
+    if board.empty:
+        st.info("No probable-pitcher data available for this slate yet.")
+        return
+
+    avg_pressure = board["lineup_pressure"].mean()
+    avg_era = board["era"].mean(skipna=True)
+    top_score = board["attack_score"].max()
+    smash_count = (board["tier"] == "🔥 Smash Spot").sum()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Top Attack Score", f"{top_score:.1f}")
+    m2.metric("Smash Spot Pitchers", int(smash_count))
+    m3.metric("Avg Lineup Pressure", f"{avg_pressure:.1f}")
+    m4.metric("Avg ERA (slate)", f"{avg_era:.2f}" if pd.notna(avg_era) else "—")
+
+    tier_filter = st.multiselect(
+        "Filter by tier", options=["🔥 Smash Spot", "✅ Attackable", "➖ Neutral Lean", "🛡️ Tough Matchup"],
+        default=["🔥 Smash Spot", "✅ Attackable"],
+    )
+    filtered = board[board["tier"].isin(tier_filter)] if tier_filter else board
+
+    rows_html = ""
+    for _, r in filtered.iterrows():
+        rows_html += f"""
+        <tr>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;">
+            <div style="font-weight:600;color:#1B2A41;">{r['pitcher']}</div>
+            <div style="font-size:11px;color:#9AA5B1;font-family:monospace;">{r['pitching_team']} vs {r['opp_team']}</div>
+          </td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;"><span style="font-size:12px;">{r['tier']}</span></td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;font-weight:700;{heat_style(r['attack_score']/100)}">{r['attack_score']:.1f}</td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{r['lineup_pressure']:.1f}</td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['era']) else f"{r['era']:.2f}"}</td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['hr9']) else f"{r['hr9']:.2f}"}</td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['whiff_pct']) else f"{r['whiff_pct']:.1f}%"}</td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{'—' if pd.isna(r['kbb_pct']) else f"{r['kbb_pct']:.1f}%"}</td>
+          <td style="padding:8px 12px;border-top:1px solid #EEF0F3;text-align:right;font-family:monospace;">{r['park_factor']:.2f}×</td>
+        </tr>
+        """
+
+    st.markdown(
+        f"""
+        <div style="background:white;border:1px solid #E4E7EC;border-radius:12px;overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="text-align:right;color:#9AA5B1;font-size:11px;text-transform:uppercase;">
+                <th style="padding:8px 12px;text-align:left;">Pitcher</th>
+                <th style="padding:8px 12px;text-align:left;">Tier</th>
+                <th style="padding:8px 12px;">Attack Score</th>
+                <th style="padding:8px 12px;">Lineup Pressure</th>
+                <th style="padding:8px 12px;">ERA</th>
+                <th style="padding:8px 12px;">HR/9</th>
+                <th style="padding:8px 12px;">Whiff%</th>
+                <th style="padding:8px 12px;">K-BB%</th>
+                <th style="padding:8px 12px;">Park</th>
+              </tr>
+            </thead>
+            <tbody>{rows_html}</tbody>
+          </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Attack Score blends opponent power (ISO), the pitcher's own HR/9 and ERA, weaker plate discipline "
+        "(Whiff%, K-BB%), and park factor — all normalized against today's full slate. Higher = more attackable. "
+        "Tiers: Smash Spot 75+, Attackable 60–74, Neutral Lean 45–59, Tough Matchup below 45."
+    )
+
+
 # ----------------------------- App layout ------------------------------ #
 
 st.markdown(
@@ -707,6 +880,8 @@ with top_r:
         sel_date = st.date_input("Date", value=date_cls.today(), label_visibility="collapsed")
     with c2:
         pass
+
+page = st.radio("Page", options=["Game Board", "Pitcher Attack Board"], horizontal=True, label_visibility="collapsed")
 
 with st.expander("📖 Stat Glossary — what am I looking at?"):
     gloss_tab1, gloss_tab2 = st.tabs(["Hitter Stats", "Pitcher Stats"])
@@ -761,6 +936,13 @@ games = get_schedule(date_str)
 
 if not games:
     st.warning(f"No MLB games scheduled for {date_str}. Pick a different date.")
+    st.stop()
+
+if page == "Pitcher Attack Board":
+    st.markdown("#### Pitcher Attack Board — every probable starter on today's slate")
+    with st.spinner("Scoring today's slate…"):
+        attack_board = build_attack_board(games, season)
+    render_attack_board(attack_board)
     st.stop()
 
 game_labels = {g["key"]: f"{g['away']['abbreviation']} @ {g['home']['abbreviation']}" for g in games}
