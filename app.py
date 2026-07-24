@@ -123,6 +123,7 @@ def get_sheets_access_token():
     """Returns a bearer token for Sheets/Drive API calls, or None if unavailable.
     Cached just under the 1-hour token lifetime so it auto-refreshes."""
     if not SHEETS_AVAILABLE:
+        st.session_state["_sheets_error"] = "rsa/pyasn1 packages not installed in this environment."
         return None
     try:
         sa_info = dict(st.secrets["gcp_service_account"])
@@ -133,8 +134,10 @@ def get_sheets_access_token():
             timeout=10,
         )
         resp.raise_for_status()
+        st.session_state["_sheets_error"] = None
         return resp.json()["access_token"]
-    except Exception:
+    except Exception as e:
+        st.session_state["_sheets_error"] = f"{type(e).__name__}: {e}"
         return None
 
 
@@ -172,7 +175,8 @@ def log_board_to_sheets(df: pd.DataFrame, game: dict, date_str: str, batting_tea
     Odds/result/edge fields are left blank for later manual entry."""
     token = get_sheets_access_token()
     if token is None:
-        return False, "Sheets not connected yet — check Streamlit secrets."
+        detail = st.session_state.get("_sheets_error", "unknown reason")
+        return False, f"Sheets not connected — {detail}"
 
     try:
         sheet_id = st.secrets["sheet_id"]
